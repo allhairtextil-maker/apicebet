@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ÁPICE BET — Apostas Esportivas Online</title>
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'><path d='M4 34 L20 4 L36 34 L28 34 L20 18 L12 34 Z' fill='%23c5f82a'/><path d='M20 18 L24 26 L16 26 Z' fill='%2306080c'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -2272,6 +2273,9 @@ input { font-family: inherit; }
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 420px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   animation: slideUp 0.3s ease;
 }
@@ -2282,6 +2286,7 @@ input { font-family: inherit; }
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 .modal-head h3 {
   font-family: 'Anton', sans-serif;
@@ -2290,7 +2295,16 @@ input { font-family: inherit; }
 }
 .modal-close { font-size: 22px; color: var(--text-mute); padding: 4px; }
 .modal-close:hover { color: var(--text); }
-.modal-body { padding: 24px; }
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.modal-body::-webkit-scrollbar { width: 6px; }
+.modal-body::-webkit-scrollbar-track { background: var(--bg-1); }
+.modal-body::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+body.modal-open { overflow: hidden; }
 .field { margin-bottom: 16px; }
 .field label {
   display: block;
@@ -3517,9 +3531,13 @@ function placeBet() {
 // ============ MODALS ============
 function openModal(name) {
   document.getElementById('modal' + name[0].toUpperCase() + name.slice(1)).classList.add('open');
+  document.body.classList.add('modal-open');
 }
 function closeModal(name) {
   document.getElementById('modal' + name[0].toUpperCase() + name.slice(1)).classList.remove('open');
+  if (!document.querySelector('.modal-backdrop.open')) {
+    document.body.classList.remove('modal-open');
+  }
 }
 function fakeLogin() {
   closeModal('login');
@@ -3758,8 +3776,21 @@ document.querySelectorAll('.betslip-tab').forEach(tab => {
 
 document.querySelectorAll('.modal-backdrop').forEach(m => {
   m.addEventListener('click', (e) => {
-    if (e.target === m) m.classList.remove('open');
+    if (e.target === m) {
+      m.classList.remove('open');
+      if (!document.querySelector('.modal-backdrop.open')) {
+        document.body.classList.remove('modal-open');
+      }
+    }
   });
+});
+
+// ESC fecha modal aberto
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
+    document.body.classList.remove('modal-open');
+  }
 });
 
 // ============ REAL-TIME ESPN API INTEGRATION ============
@@ -3807,10 +3838,16 @@ const ESPN_NAME_MAP = {
 
 function mapEspnName(n) { return ESPN_NAME_MAP[n] || n; }
 
-// Badge fixa de status no canto
+// Badge fixa de status no canto - clicável pra forçar refresh
 const liveBadge = document.createElement('div');
 liveBadge.className = 'live-data-badge';
+liveBadge.style.cursor = 'pointer';
+liveBadge.title = 'Clique para atualizar agora';
 liveBadge.innerHTML = '<span class="ldot"></span><span class="status">Sincronizando…</span><span class="time" id="ldTime">--:--</span>';
+liveBadge.addEventListener('click', () => {
+  console.log('[ÁPICE] Refresh manual solicitado pelo usuário');
+  refreshAllSections();
+});
 document.body.appendChild(liveBadge);
 
 function setLiveStatus(state, msg) {
@@ -3831,15 +3868,40 @@ const CORS_PROXIES = [
 async function fetchWithFallback(url, timeoutMs = 8000) {
   for (const proxy of CORS_PROXIES) {
     const finalUrl = proxy ? proxy + encodeURIComponent(url) : url;
+    const proxyLabel = proxy ? proxy.split('/')[2] : 'direto';
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch(finalUrl, { signal: controller.signal });
       clearTimeout(timeout);
-      if (res.ok) return await res.json();
-    } catch (e) { /* tenta próximo */ }
+      if (res.ok) {
+        const data = await res.json();
+        console.log('[ÁPICE] ✓ Fetch OK via', proxyLabel, '→', url.split('/').slice(-2).join('/'), '| eventos:', data.events?.length || 0);
+        return data;
+      }
+      console.warn('[ÁPICE] ✗ HTTP', res.status, 'via', proxyLabel, '→', url);
+    } catch (e) {
+      console.warn('[ÁPICE] ✗ Falhou via', proxyLabel, ':', e.message);
+    }
   }
   throw new Error('Todos os endpoints falharam para: ' + url);
+}
+
+// Calcula range de datas: últimos N dias + próximos M dias
+function getDateRange(daysBack, daysForward) {
+  const now = new Date();
+  const back = new Date(now); back.setDate(now.getDate() - daysBack);
+  const fwd = new Date(now); fwd.setDate(now.getDate() + daysForward);
+  const fmt = d => d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+  return fmt(back) + '-' + fmt(fwd);
+}
+
+function buildFeedUrl(feedKey) {
+  const base = ESPN_FEEDS[feedKey];
+  if (!base) return null;
+  // Janela diferente por esporte: NBA tem jogo quase todo dia, futebol é mais espalhado
+  const range = feedKey === 'nba' ? getDateRange(2, 5) : getDateRange(3, 14);
+  return base + '?dates=' + range;
 }
 
 async function fetchFeed(feedKey) {
@@ -3862,7 +3924,7 @@ async function fetchFeed(feedKey) {
     }
     return { events: live, _combined: true };
   }
-  const url = ESPN_FEEDS[feedKey];
+  const url = buildFeedUrl(feedKey);
   if (!url) return null;
   const data = await fetchWithFallback(url);
   data._sport = feedKey === 'nba' ? 'basketball' : 'soccer';
